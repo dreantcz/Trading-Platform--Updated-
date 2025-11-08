@@ -366,20 +366,20 @@ def index():
     conn.close()
     
     user_stats = {
-        'rank': 100,  # Changed from 47
+        'rank': 100,
         'total_users': 12453,
-        'streak': 0,  # Changed from 12
-        'badges': 1,  # Only $100K Portfolio unlocked
+        'streak': 0,
+        'badges': 1,
         'portfolio_value': portfolio_value,
         'cash': current_cash,
         'daily_change': portfolio_value - 100000.00,
         'daily_change_percent': ((portfolio_value - 100000.00) / 100000.00 * 100),
-        'level': 'Beginner',  # Changed from Gold Trader
-        'xp': 0,  # Changed from 8450
-        'next_level_xp': 1000  # Changed from 10000
+        'level': 'Beginner',
+        'xp': 0,
+        'next_level_xp': 1000
     }
     
-    # Top 10 leaderboard only (removed "You" row)
+    # Top 10 leaderboard only
     leaderboard = [
         {'rank': 1, 'name': 'TradeMaster_99', 'returns': 147.3, 'streak': 45, 'badge': '🏆'},
         {'rank': 2, 'name': 'BullMarket_King', 'returns': 132.8, 'streak': 38, 'badge': '🥈'},
@@ -418,7 +418,9 @@ def index():
 @app.route('/trade', methods=['POST'])
 def trade():
     try:
-        init_user()
+        # Ensure user is initialized
+        if 'session_id' not in session or 'user_id' not in session:
+            init_user()
         
         data = request.json
         if not data:
@@ -448,6 +450,7 @@ def trade():
         price = stock['price']
         total_cost = shares * price
         session_id = session['session_id']
+        user_id = session['user_id']
         
         conn = get_db_connection()
         cur = conn.cursor()
@@ -455,6 +458,11 @@ def trade():
         # Get current cash
         cur.execute('SELECT current_cash FROM users WHERE session_id = %s', (session_id,))
         user = cur.fetchone()
+        if not user:
+            cur.close()
+            conn.close()
+            return jsonify({'success': False, 'message': 'User not found'})
+        
         current_cash = float(user['current_cash'])
         
         # Check if this is the user's first trade
@@ -491,13 +499,13 @@ def trade():
                 cur.execute('''
                     INSERT INTO portfolio (user_id, session_id, symbol, shares, avg_price)
                     VALUES (%s, %s, %s, %s, %s)
-                ''', (session['user_id'], session_id, symbol, shares, price))
+                ''', (user_id, session_id, symbol, shares, price))
             
             # Record trade
             cur.execute('''
                 INSERT INTO trades (user_id, session_id, symbol, action, shares, price, total_cost)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ''', (session['user_id'], session_id, symbol, 'BUY', shares, price, total_cost))
+            ''', (user_id, session_id, symbol, 'BUY', shares, price, total_cost))
             
             # Unlock First Trade achievement if this is first trade
             if is_first_trade:
@@ -505,7 +513,7 @@ def trade():
                     INSERT INTO achievements (user_id, session_id, achievement_name)
                     VALUES (%s, %s, %s)
                     ON CONFLICT (session_id, achievement_name) DO NOTHING
-                ''', (session['user_id'], session_id, 'First Trade'))
+                ''', (user_id, session_id, 'First Trade'))
             
             conn.commit()
             cur.close()
@@ -558,7 +566,7 @@ def trade():
             cur.execute('''
                 INSERT INTO trades (user_id, session_id, symbol, action, shares, price, total_cost)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ''', (session['user_id'], session_id, symbol, 'SELL', shares, price, total_cost))
+            ''', (user_id, session_id, symbol, 'SELL', shares, price, total_cost))
             
             # Unlock First Trade achievement if this is first trade
             if is_first_trade:
@@ -566,7 +574,7 @@ def trade():
                     INSERT INTO achievements (user_id, session_id, achievement_name)
                     VALUES (%s, %s, %s)
                     ON CONFLICT (session_id, achievement_name) DO NOTHING
-                ''', (session['user_id'], session_id, 'First Trade'))
+                ''', (user_id, session_id, 'First Trade'))
             
             conn.commit()
             cur.close()
@@ -591,168 +599,16 @@ def trade():
             
             return jsonify(response)
         
-        cur.close()
-        conn.close()
-        return jsonify({'success': False, 'message': 'Invalid action'})
+        else:
+            cur.close()
+            conn.close()
+            return jsonify({'success': False, 'message': 'Invalid action'})
         
     except Exception as e:
         print(f"Trade route error: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'message': f'Server error: {str(e)}'})
-    except Exception as e:
-        print(f"Trade route error: {e}")
-        return jsonify({'success': False, 'message': f'Server error: {str(e)}'})
-    
-    price = stock['price']
-    total_cost = shares * price
-    session_id = session['session_id']
-    
-    conn = get_db_connection()
-    cur = conn.cursor()
-    
-    # Get current cash
-    cur.execute('SELECT current_cash FROM users WHERE session_id = %s', (session_id,))
-    user = cur.fetchone()
-    current_cash = float(user['current_cash'])
-    
-    # Check if this is the user's first trade
-    cur.execute('SELECT COUNT(*) as count FROM trades WHERE session_id = %s', (session_id,))
-    trade_count = cur.fetchone()['count']
-    is_first_trade = trade_count == 0
-    
-    if action == 'buy':
-        if total_cost > current_cash:
-            cur.close()
-            conn.close()
-            return jsonify({'success': False, 'message': 'Insufficient funds'})
-        
-        # Update cash
-        new_cash = current_cash - total_cost
-        cur.execute('UPDATE users SET current_cash = %s WHERE session_id = %s', (new_cash, session_id))
-        
-        # Update portfolio
-        cur.execute('SELECT shares, avg_price FROM portfolio WHERE session_id = %s AND symbol = %s', (session_id, symbol))
-        existing = cur.fetchone()
-        
-        if existing:
-            old_shares = existing['shares']
-            old_avg = float(existing['avg_price'])
-            new_shares = old_shares + shares
-            new_avg = ((old_shares * old_avg) + (shares * price)) / new_shares
-            
-            cur.execute('''
-                UPDATE portfolio 
-                SET shares = %s, avg_price = %s, updated_at = CURRENT_TIMESTAMP
-                WHERE session_id = %s AND symbol = %s
-            ''', (new_shares, new_avg, session_id, symbol))
-        else:
-            cur.execute('''
-                INSERT INTO portfolio (user_id, session_id, symbol, shares, avg_price)
-                VALUES (%s, %s, %s, %s, %s)
-            ''', (session['user_id'], session_id, symbol, shares, price))
-        
-        # Record trade
-        cur.execute('''
-            INSERT INTO trades (user_id, session_id, symbol, action, shares, price, total_cost)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ''', (session['user_id'], session_id, symbol, 'BUY', shares, price, total_cost))
-        
-        # Unlock First Trade achievement if this is first trade
-        if is_first_trade:
-            cur.execute('''
-                INSERT INTO achievements (user_id, session_id, achievement_name)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (session_id, achievement_name) DO NOTHING
-            ''', (session['user_id'], session_id, 'First Trade'))
-        
-        conn.commit()
-        cur.close()
-        conn.close()
-        
-        log_event('trade_completed', {
-            'symbol': symbol,
-            'shares': shares,
-            'action': 'buy',
-            'price': price,
-            'total': total_cost
-        })
-        
-        response = {
-            'success': True,
-            'message': f'Successfully bought {shares} shares of {symbol}!',
-            'cash': new_cash
-        }
-        
-        if is_first_trade:
-            response['achievement_unlocked'] = 'First Trade'
-        
-        return jsonify(response)
-    
-    elif action == 'sell':
-        cur.execute('SELECT shares FROM portfolio WHERE session_id = %s AND symbol = %s', (session_id, symbol))
-        portfolio_item = cur.fetchone()
-        
-        if not portfolio_item or portfolio_item['shares'] < shares:
-            cur.close()
-            conn.close()
-            return jsonify({'success': False, 'message': 'Insufficient shares'})
-        
-        # Update cash
-        new_cash = current_cash + total_cost
-        cur.execute('UPDATE users SET current_cash = %s WHERE session_id = %s', (new_cash, session_id))
-        
-        # Update portfolio
-        new_shares = portfolio_item['shares'] - shares
-        if new_shares == 0:
-            cur.execute('DELETE FROM portfolio WHERE session_id = %s AND symbol = %s', (session_id, symbol))
-        else:
-            cur.execute('''
-                UPDATE portfolio 
-                SET shares = %s, updated_at = CURRENT_TIMESTAMP
-                WHERE session_id = %s AND symbol = %s
-            ''', (new_shares, session_id, symbol))
-        
-        # Record trade
-        cur.execute('''
-            INSERT INTO trades (user_id, session_id, symbol, action, shares, price, total_cost)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ''', (session['user_id'], session_id, symbol, 'SELL', shares, price, total_cost))
-        
-        # Unlock First Trade achievement if this is first trade
-        if is_first_trade:
-            cur.execute('''
-                INSERT INTO achievements (user_id, session_id, achievement_name)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (session_id, achievement_name) DO NOTHING
-            ''', (session['user_id'], session_id, 'First Trade'))
-        
-        conn.commit()
-        cur.close()
-        conn.close()
-        
-        log_event('trade_completed', {
-            'symbol': symbol,
-            'shares': shares,
-            'action': 'sell',
-            'price': price,
-            'total': total_cost
-        })
-        
-        response = {
-            'success': True,
-            'message': f'Successfully sold {shares} shares of {symbol}!',
-            'cash': new_cash
-        }
-        
-        if is_first_trade:
-            response['achievement_unlocked'] = 'First Trade'
-        
-        return jsonify(response)
-    
-    cur.close()
-    conn.close()
-    return jsonify({'success': False, 'message': 'Invalid action'})
 
 if __name__ == '__main__':
     init_db()
