@@ -363,103 +363,103 @@ def index():
         
         print(f"Found user: {user}")
         current_cash = float(user['current_cash'])
-    
-    # Get portfolio from database
-    cur.execute('''
-        SELECT symbol, shares, avg_price 
-        FROM portfolio 
-        WHERE session_id = %s
-    ''', (session_id,))
-    portfolio_data = cur.fetchall()
-    
-    # Calculate portfolio value
-    portfolio_value = current_cash
-    portfolio_items = []
-    market_data = get_market_data()
-    
-    for item in portfolio_data:
-        stock = next((s for s in market_data if s['symbol'] == item['symbol']), None)
-        if stock:
-            current_value = item['shares'] * stock['price']
-            cost_basis = item['shares'] * float(item['avg_price'])
-            gain_loss = current_value - cost_basis
-            gain_loss_percent = (gain_loss / cost_basis * 100) if cost_basis > 0 else 0
-            
-            portfolio_value += current_value
-            
-            portfolio_items.append({
-                'symbol': item['symbol'],
-                'shares': item['shares'],
-                'avg_price': float(item['avg_price']),
-                'current_price': stock['price'],
-                'current_value': current_value,
-                'gain_loss': gain_loss,
-                'gain_loss_percent': gain_loss_percent
+        
+        # Get portfolio from database
+        cur.execute('''
+            SELECT symbol, shares, avg_price 
+            FROM portfolio 
+            WHERE session_id = %s
+        ''', (session_id,))
+        portfolio_data = cur.fetchall()
+        
+        # Calculate portfolio value
+        portfolio_value = current_cash
+        portfolio_items = []
+        market_data = get_market_data()
+        
+        for item in portfolio_data:
+            stock = next((s for s in market_data if s['symbol'] == item['symbol']), None)
+            if stock:
+                current_value = item['shares'] * stock['price']
+                cost_basis = item['shares'] * float(item['avg_price'])
+                gain_loss = current_value - cost_basis
+                gain_loss_percent = (gain_loss / cost_basis * 100) if cost_basis > 0 else 0
+                
+                portfolio_value += current_value
+                
+                portfolio_items.append({
+                    'symbol': item['symbol'],
+                    'shares': item['shares'],
+                    'avg_price': float(item['avg_price']),
+                    'current_price': stock['price'],
+                    'current_value': current_value,
+                    'gain_loss': gain_loss,
+                    'gain_loss_percent': gain_loss_percent
+                })
+        
+        # Get trade history
+        cur.execute('''
+            SELECT symbol, action, shares, price, total_cost, timestamp
+            FROM trades
+            WHERE session_id = %s
+            ORDER BY timestamp DESC
+            LIMIT 10
+        ''', (session_id,))
+        trade_history = cur.fetchall()
+        
+        cur.close()
+        conn.close()
+        
+        user_stats = {
+            'rank': 100,
+            'total_users': 12453,
+            'streak': 0,
+            'badges': 1,
+            'portfolio_value': portfolio_value,
+            'cash': current_cash,
+            'daily_change': portfolio_value - 100000.00,
+            'daily_change_percent': ((portfolio_value - 100000.00) / 100000.00 * 100),
+            'level': 'Beginner',
+            'xp': 0,
+            'next_level_xp': 1000
+        }
+        
+        # Top 10 leaderboard only
+        leaderboard = [
+            {'rank': 1, 'name': 'TradeMaster_99', 'returns': 147.3, 'streak': 45, 'badge': '🏆'},
+            {'rank': 2, 'name': 'BullMarket_King', 'returns': 132.8, 'streak': 38, 'badge': '🥈'},
+            {'rank': 3, 'name': 'DiamondHands_Pro', 'returns': 128.5, 'streak': 31, 'badge': '🥉'},
+            {'rank': 4, 'name': 'MoonShot_Trader', 'returns': 119.2, 'streak': 28, 'badge': '⭐'},
+            {'rank': 5, 'name': 'StockWhiz_AI', 'returns': 115.7, 'streak': 25, 'badge': '⭐'},
+            {'rank': 6, 'name': 'RocketTrader_X', 'returns': 108.3, 'streak': 22, 'badge': '⭐'},
+            {'rank': 7, 'name': 'Alpha_Seeker', 'returns': 102.5, 'streak': 20, 'badge': '⭐'},
+            {'rank': 8, 'name': 'Market_Maven', 'returns': 98.7, 'streak': 18, 'badge': '⭐'},
+            {'rank': 9, 'name': 'Trade_Genius', 'returns': 94.3, 'streak': 15, 'badge': '⭐'},
+            {'rank': 10, 'name': 'Portfolio_Pro', 'returns': 89.1, 'streak': 12, 'badge': '⭐'}
+        ]
+        
+        achievements = get_user_achievements()
+        
+        # Format trade history
+        formatted_history = []
+        for trade in trade_history:
+            formatted_history.append({
+                'symbol': trade['symbol'],
+                'action': trade['action'],
+                'shares': trade['shares'],
+                'price': float(trade['price']),
+                'total': float(trade['total_cost']),
+                'timestamp': trade['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
             })
-    
-    # Get trade history
-    cur.execute('''
-        SELECT symbol, action, shares, price, total_cost, timestamp
-        FROM trades
-        WHERE session_id = %s
-        ORDER BY timestamp DESC
-        LIMIT 10
-    ''', (session_id,))
-    trade_history = cur.fetchall()
-    
-    cur.close()
-    conn.close()
-    
-    user_stats = {
-        'rank': 100,
-        'total_users': 12453,
-        'streak': 0,
-        'badges': 1,
-        'portfolio_value': portfolio_value,
-        'cash': current_cash,
-        'daily_change': portfolio_value - 100000.00,
-        'daily_change_percent': ((portfolio_value - 100000.00) / 100000.00 * 100),
-        'level': 'Beginner',
-        'xp': 0,
-        'next_level_xp': 1000
-    }
-    
-    # Top 10 leaderboard only
-    leaderboard = [
-        {'rank': 1, 'name': 'TradeMaster_99', 'returns': 147.3, 'streak': 45, 'badge': '🏆'},
-        {'rank': 2, 'name': 'BullMarket_King', 'returns': 132.8, 'streak': 38, 'badge': '🥈'},
-        {'rank': 3, 'name': 'DiamondHands_Pro', 'returns': 128.5, 'streak': 31, 'badge': '🥉'},
-        {'rank': 4, 'name': 'MoonShot_Trader', 'returns': 119.2, 'streak': 28, 'badge': '⭐'},
-        {'rank': 5, 'name': 'StockWhiz_AI', 'returns': 115.7, 'streak': 25, 'badge': '⭐'},
-        {'rank': 6, 'name': 'RocketTrader_X', 'returns': 108.3, 'streak': 22, 'badge': '⭐'},
-        {'rank': 7, 'name': 'Alpha_Seeker', 'returns': 102.5, 'streak': 20, 'badge': '⭐'},
-        {'rank': 8, 'name': 'Market_Maven', 'returns': 98.7, 'streak': 18, 'badge': '⭐'},
-        {'rank': 9, 'name': 'Trade_Genius', 'returns': 94.3, 'streak': 15, 'badge': '⭐'},
-        {'rank': 10, 'name': 'Portfolio_Pro', 'returns': 89.1, 'streak': 12, 'badge': '⭐'}
-    ]
-    
-    achievements = get_user_achievements()
-    
-    # Format trade history
-    formatted_history = []
-    for trade in trade_history:
-        formatted_history.append({
-            'symbol': trade['symbol'],
-            'action': trade['action'],
-            'shares': trade['shares'],
-            'price': float(trade['price']),
-            'total': float(trade['total_cost']),
-            'timestamp': trade['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
-        })
-    
-    return render_template('gamified.html',
-                         user_stats=user_stats,
-                         leaderboard=leaderboard,
-                         market_data=market_data,
-                         achievements=achievements,
-                         portfolio=portfolio_items,
-                         trade_history=formatted_history)
-    
+        
+        return render_template('gamified.html',
+                             user_stats=user_stats,
+                             leaderboard=leaderboard,
+                             market_data=market_data,
+                             achievements=achievements,
+                             portfolio=portfolio_items,
+                             trade_history=formatted_history)
+        
     except Exception as e:
         print(f"Index route error: {e}")
         import traceback
