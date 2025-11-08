@@ -5,6 +5,7 @@ from psycopg.rows import dict_row
 import os
 import json
 from dotenv import load_dotenv
+import random
 
 load_dotenv()
 
@@ -19,7 +20,7 @@ def get_db_connection():
     )
     return conn
 
-# Initialize database tables
+# Initialize database tables (same as gamified)
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
@@ -47,7 +48,6 @@ def init_db():
             shares INTEGER NOT NULL,
             price DECIMAL(10, 2) NOT NULL,
             total_cost DECIMAL(12, 2) NOT NULL,
-            order_type VARCHAR(20),
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -79,19 +79,15 @@ def init_db():
         )
     ''')
     
-    # Orders table
+    # Stock prices table (shared with gamified)
     cur.execute('''
-        CREATE TABLE IF NOT EXISTS orders (
-            order_id SERIAL PRIMARY KEY,
-            user_id INTEGER REFERENCES users(user_id),
-            session_id VARCHAR(255) NOT NULL,
-            symbol VARCHAR(10) NOT NULL,
-            side VARCHAR(10) NOT NULL,
-            shares INTEGER NOT NULL,
-            order_type VARCHAR(20) NOT NULL,
-            limit_price DECIMAL(10, 2),
-            status VARCHAR(20) DEFAULT 'PENDING',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        CREATE TABLE IF NOT EXISTS stock_prices (
+            symbol VARCHAR(10) PRIMARY KEY,
+            company_name VARCHAR(100) NOT NULL,
+            base_price DECIMAL(10, 2) NOT NULL,
+            current_price DECIMAL(10, 2) NOT NULL,
+            volatility VARCHAR(10) NOT NULL,
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
@@ -99,7 +95,6 @@ def init_db():
     cur.close()
     conn.close()
 
-# Initialize session and user
 def init_user():
     if 'session_id' not in session:
         session['session_id'] = os.urandom(16).hex()
@@ -119,7 +114,6 @@ def init_user():
         cur.close()
         conn.close()
 
-# Log clickstream event
 def log_event(event_type, event_data=None):
     if 'session_id' not in session:
         return
@@ -142,9 +136,127 @@ def log_event(event_type, event_data=None):
     cur.close()
     conn.close()
 
+# Update stock prices with algorithmic volatility
+def update_stock_prices():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    # Get all stocks
+    cur.execute('SELECT symbol, base_price, volatility FROM stock_prices')
+    stocks = cur.fetchall()
+    
+    for stock in stocks:
+        symbol = stock['symbol']
+        base_price = float(stock['base_price'])
+        volatility = stock['volatility']
+        
+        # Determine volatility range
+        if volatility == 'high':
+            change_percent = random.uniform(-0.05, 0.05)  # ±5%
+        elif volatility == 'medium':
+            change_percent = random.uniform(-0.02, 0.02)  # ±2%
+        else:  # low
+            change_percent = random.uniform(-0.01, 0.01)  # ±1%
+        
+        # Calculate new price
+        new_price = base_price * (1 + change_percent)
+        new_price = round(new_price, 2)
+        
+        # Update in database
+        cur.execute('''
+            UPDATE stock_prices 
+            SET current_price = %s, last_updated = CURRENT_TIMESTAMP
+            WHERE symbol = %s
+        ''', (new_price, symbol))
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# Initialize stock data if not exists (same 20 stocks as gamified)
+def init_stock_data():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    stocks = [
+        ('AAPL', 'Apple Inc.', 178.50, 'medium'),
+        ('MSFT', 'Microsoft Corporation', 378.50, 'medium'),
+        ('GOOGL', 'Alphabet Inc.', 142.00, 'medium'),
+        ('AMZN', 'Amazon.com Inc.', 151.25, 'medium'),
+        ('META', 'Meta Platforms Inc.', 352.75, 'medium'),
+        ('TSLA', 'Tesla Inc.', 242.50, 'high'),
+        ('NVDA', 'NVIDIA Corporation', 478.00, 'high'),
+        ('AMD', 'Advanced Micro Devices', 138.25, 'high'),
+        ('JPM', 'JPMorgan Chase & Co.', 158.75, 'low'),
+        ('BAC', 'Bank of America Corp.', 33.50, 'low'),
+        ('WMT', 'Walmart Inc.', 168.25, 'low'),
+        ('PG', 'Procter & Gamble Co.', 155.50, 'low'),
+        ('JNJ', 'Johnson & Johnson', 157.75, 'low'),
+        ('DIS', 'The Walt Disney Company', 96.50, 'medium'),
+        ('NKE', 'Nike Inc.', 108.75, 'medium'),
+        ('NFLX', 'Netflix Inc.', 442.50, 'high'),
+        ('COST', 'Costco Wholesale Corp.', 588.25, 'low'),
+        ('V', 'Visa Inc.', 258.50, 'low'),
+        ('MA', 'Mastercard Inc.', 412.75, 'low'),
+        ('PEP', 'PepsiCo Inc.', 172.50, 'low')
+    ]
+    
+    for symbol, name, price, volatility in stocks:
+        cur.execute('''
+            INSERT INTO stock_prices (symbol, company_name, base_price, current_price, volatility)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (symbol) DO NOTHING
+        ''', (symbol, name, price, price, volatility))
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# Get current stock prices
+def get_market_data():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    cur.execute('''
+        SELECT symbol, company_name, current_price, base_price, volatility
+        FROM stock_prices
+        ORDER BY symbol
+    ''')
+    stocks = cur.fetchall()
+    
+    cur.close()
+    conn.close()
+    
+    market_data = []
+    for stock in stocks:
+        current = float(stock['current_price'])
+        base = float(stock['base_price'])
+        change = current - base
+        change_percent = (change / base * 100) if base > 0 else 0
+        
+        # Calculate bid/ask spread (0.01-0.02% spread)
+        spread = current * 0.0001
+        bid = round(current - spread, 2)
+        ask = round(current + spread, 2)
+        
+        market_data.append({
+            'symbol': stock['symbol'],
+            'name': stock['company_name'],
+            'bid': bid,
+            'ask': ask,
+            'last': current,
+            'change': change,
+            'change_percent': change_percent,
+            'volume': f"{random.randint(10, 250)}M"
+        })
+    
+    return market_data
+
 @app.route('/')
 def index():
     init_user()
+    init_stock_data()
+    update_stock_prices()
     log_event('page_view', {'page': 'home'})
     
     session_id = session['session_id']
@@ -198,15 +310,6 @@ def index():
         'today_change_percent': ((portfolio_value - 100000.00) / 100000.00 * 100)
     }
     
-    # Get orders
-    cur.execute('''
-        SELECT order_id, symbol, side, shares, order_type, limit_price, status, created_at as timestamp
-        FROM orders
-        WHERE session_id = %s AND status = 'PENDING'
-        ORDER BY created_at DESC
-    ''', (session_id,))
-    orders = cur.fetchall()
-    
     # Get trade history
     cur.execute('''
         SELECT symbol, action as side, shares, price, total_cost as total, timestamp
@@ -220,20 +323,7 @@ def index():
     cur.close()
     conn.close()
     
-    # Format data for template
-    formatted_orders = []
-    for order in orders:
-        formatted_orders.append({
-            'id': order['order_id'],
-            'symbol': order['symbol'],
-            'side': order['side'],
-            'shares': order['shares'],
-            'order_type': order['order_type'],
-            'limit_price': float(order['limit_price']) if order['limit_price'] else None,
-            'status': order['status'],
-            'timestamp': order['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
-        })
-    
+    # Format history
     formatted_history = []
     for trade in history:
         formatted_history.append({
@@ -249,7 +339,7 @@ def index():
                          account_summary=account_summary,
                          positions=positions,
                          market_data=market_data,
-                         orders=formatted_orders,
+                         orders=[],  # No pending orders functionality
                          history=formatted_history)
 
 @app.route('/trade', methods=['POST'])
@@ -260,219 +350,138 @@ def trade():
     symbol = data.get('symbol', '').upper()
     shares = int(data.get('shares', 0))
     action = data.get('action')
-    order_type = data.get('order_type', 'market')
-    limit_price = float(data.get('limit_price', 0)) if data.get('limit_price') else None
     
     log_event('trade_attempt', {
         'symbol': symbol,
         'shares': shares,
-        'action': action,
-        'order_type': order_type
+        'action': action
     })
     
     if not symbol or shares <= 0:
         return jsonify({'success': False, 'message': 'Invalid order parameters'})
     
-    stock = next((s for s in get_market_data() if s['symbol'] == symbol), None)
+    market_data = get_market_data()
+    stock = next((s for s in market_data if s['symbol'] == symbol), None)
     if not stock:
-        return jsonify({'success': False, 'message': 'Symbol not found'})
+        return jsonify({'success': False, 'message': 'Please select a symbol from the Market Data list'})
     
     session_id = session['session_id']
+    price = stock['last']
+    total_cost = shares * price
     
-    # For market orders, execute immediately
-    if order_type == 'market':
-        price = stock['last']
-        total_cost = shares * price
-        
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        cur.execute('SELECT current_cash FROM users WHERE session_id = %s', (session_id,))
-        user = cur.fetchone()
-        current_cash = float(user['current_cash'])
-        
-        if action == 'buy':
-            if total_cost > current_cash:
-                cur.close()
-                conn.close()
-                return jsonify({'success': False, 'message': 'Insufficient funds'})
-            
-            # Update cash
-            new_cash = current_cash - total_cost
-            cur.execute('UPDATE users SET current_cash = %s WHERE session_id = %s', (new_cash, session_id))
-            
-            # Update portfolio
-            cur.execute('SELECT shares, avg_price FROM portfolio WHERE session_id = %s AND symbol = %s', (session_id, symbol))
-            existing = cur.fetchone()
-            
-            if existing:
-                old_shares = existing['shares']
-                old_avg = float(existing['avg_price'])
-                new_shares = old_shares + shares
-                new_avg = ((old_shares * old_avg) + (shares * price)) / new_shares
-                
-                cur.execute('''
-                    UPDATE portfolio 
-                    SET shares = %s, avg_price = %s, updated_at = CURRENT_TIMESTAMP
-                    WHERE session_id = %s AND symbol = %s
-                ''', (new_shares, new_avg, session_id, symbol))
-            else:
-                cur.execute('''
-                    INSERT INTO portfolio (user_id, session_id, symbol, shares, avg_price)
-                    VALUES (%s, %s, %s, %s, %s)
-                ''', (session['user_id'], session_id, symbol, shares, price))
-            
-            # Record trade
-            cur.execute('''
-                    INSERT INTO trades (user_id, session_id, symbol, action, shares, price, total_cost)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ''', (session['user_id'], session_id, symbol, 'BUY', shares, price, total_cost))
-            
-            conn.commit()
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    cur.execute('SELECT current_cash FROM users WHERE session_id = %s', (session_id,))
+    user = cur.fetchone()
+    current_cash = float(user['current_cash'])
+    
+    if action == 'buy':
+        if total_cost > current_cash:
             cur.close()
             conn.close()
-            
-            log_event('trade_completed', {
-                'symbol': symbol,
-                'shares': shares,
-                'action': 'buy',
-                'price': price,
-                'total': total_cost
-            })
-            
-            return jsonify({
-                'success': True,
-                'message': f'Order filled: Bought {shares} shares of {symbol} at ${price:.2f}',
-                'cash': new_cash
-            })
+            return jsonify({'success': False, 'message': 'Insufficient funds'})
         
-        elif action == 'sell':
-            cur.execute('SELECT shares FROM portfolio WHERE session_id = %s AND symbol = %s', (session_id, symbol))
-            portfolio_item = cur.fetchone()
+        # Update cash
+        new_cash = current_cash - total_cost
+        cur.execute('UPDATE users SET current_cash = %s WHERE session_id = %s', (new_cash, session_id))
+        
+        # Update portfolio
+        cur.execute('SELECT shares, avg_price FROM portfolio WHERE session_id = %s AND symbol = %s', (session_id, symbol))
+        existing = cur.fetchone()
+        
+        if existing:
+            old_shares = existing['shares']
+            old_avg = float(existing['avg_price'])
+            new_shares = old_shares + shares
+            new_avg = ((old_shares * old_avg) + (shares * price)) / new_shares
             
-            if not portfolio_item or portfolio_item['shares'] < shares:
-                cur.close()
-                conn.close()
-                return jsonify({'success': False, 'message': 'Insufficient shares'})
-            
-            # Update cash
-            new_cash = current_cash + total_cost
-            cur.execute('UPDATE users SET current_cash = %s WHERE session_id = %s', (new_cash, session_id))
-            
-            # Update portfolio
-            new_shares = portfolio_item['shares'] - shares
-            if new_shares == 0:
-                cur.execute('DELETE FROM portfolio WHERE session_id = %s AND symbol = %s', (session_id, symbol))
-            else:
-                cur.execute('''
-                    UPDATE portfolio 
-                    SET shares = %s, updated_at = CURRENT_TIMESTAMP
-                    WHERE session_id = %s AND symbol = %s
-                ''', (new_shares, session_id, symbol))
-            
-            # Record trade
             cur.execute('''
-                INSERT INTO trades (user_id, session_id, symbol, action, shares, price, total_cost)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ''', (session['user_id'], session_id, symbol, 'SELL', shares, price, total_cost))
-            
-            conn.commit()
-            cur.close()
-            conn.close()
-            
-            log_event('trade_completed', {
-                'symbol': symbol,
-                'shares': shares,
-                'action': 'sell',
-                'price': price,
-                'total': total_cost
-            })
-            
-            return jsonify({
-                'success': True,
-                'message': f'Order filled: Sold {shares} shares of {symbol} at ${price:.2f}',
-                'cash': new_cash
-            })
-    
-    # For limit orders, add to orders table
-    else:
-        conn = get_db_connection()
-        cur = conn.cursor()
+                UPDATE portfolio 
+                SET shares = %s, avg_price = %s, updated_at = CURRENT_TIMESTAMP
+                WHERE session_id = %s AND symbol = %s
+            ''', (new_shares, new_avg, session_id, symbol))
+        else:
+            cur.execute('''
+                INSERT INTO portfolio (user_id, session_id, symbol, shares, avg_price)
+                VALUES (%s, %s, %s, %s, %s)
+            ''', (session['user_id'], session_id, symbol, shares, price))
         
+        # Record trade
         cur.execute('''
-            INSERT INTO orders (user_id, session_id, symbol, side, shares, order_type, limit_price, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (session['user_id'], session_id, symbol, action.upper(), shares, order_type, limit_price, 'PENDING'))
+            INSERT INTO trades (user_id, session_id, symbol, action, shares, price, total_cost)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ''', (session['user_id'], session_id, symbol, 'BUY', shares, price, total_cost))
         
         conn.commit()
         cur.close()
         conn.close()
         
-        log_event('order_placed', {
+        log_event('trade_completed', {
             'symbol': symbol,
             'shares': shares,
-            'action': action,
-            'order_type': order_type,
-            'limit_price': limit_price
+            'action': 'buy',
+            'price': price,
+            'total': total_cost
         })
         
         return jsonify({
             'success': True,
-            'message': f'{order_type.capitalize()} order placed for {shares} shares of {symbol}'
+            'message': f'Order filled: Bought {shares} shares of {symbol} at ${price:.2f}',
+            'cash': new_cash
         })
-
-@app.route('/cancel_order', methods=['POST'])
-def cancel_order():
-    order_id = request.json.get('order_id')
-    session_id = session.get('session_id')
     
-    conn = get_db_connection()
-    cur = conn.cursor()
+    elif action == 'sell':
+        cur.execute('SELECT shares FROM portfolio WHERE session_id = %s AND symbol = %s', (session_id, symbol))
+        portfolio_item = cur.fetchone()
+        
+        if not portfolio_item or portfolio_item['shares'] < shares:
+            cur.close()
+            conn.close()
+            return jsonify({'success': False, 'message': 'Insufficient shares'})
+        
+        # Update cash
+        new_cash = current_cash + total_cost
+        cur.execute('UPDATE users SET current_cash = %s WHERE session_id = %s', (new_cash, session_id))
+        
+        # Update portfolio
+        new_shares = portfolio_item['shares'] - shares
+        if new_shares == 0:
+            cur.execute('DELETE FROM portfolio WHERE session_id = %s AND symbol = %s', (session_id, symbol))
+        else:
+            cur.execute('''
+                UPDATE portfolio 
+                SET shares = %s, updated_at = CURRENT_TIMESTAMP
+                WHERE session_id = %s AND symbol = %s
+            ''', (new_shares, session_id, symbol))
+        
+        # Record trade
+        cur.execute('''
+            INSERT INTO trades (user_id, session_id, symbol, action, shares, price, total_cost)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ''', (session['user_id'], session_id, symbol, 'SELL', shares, price, total_cost))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        log_event('trade_completed', {
+            'symbol': symbol,
+            'shares': shares,
+            'action': 'sell',
+            'price': price,
+            'total': total_cost
+        })
+        
+        return jsonify({
+            'success': True,
+            'message': f'Order filled: Sold {shares} shares of {symbol} at ${price:.2f}',
+            'cash': new_cash
+        })
     
-    cur.execute('''
-        UPDATE orders 
-        SET status = 'CANCELLED' 
-        WHERE order_id = %s AND session_id = %s
-    ''', (order_id, session_id))
-    
-    conn.commit()
     cur.close()
     conn.close()
-    
-    log_event('order_cancelled', {'order_id': order_id})
-    
-    return jsonify({'success': True, 'message': 'Order cancelled'})
-
-@app.route('/reset', methods=['POST'])
-def reset():
-    session_id = session.get('session_id')
-    if not session_id:
-        return jsonify({'success': False, 'message': 'No session found'})
-    
-    conn = get_db_connection()
-    cur = conn.cursor()
-    
-    cur.execute('UPDATE users SET current_cash = 100000.00 WHERE session_id = %s', (session_id,))
-    cur.execute('DELETE FROM portfolio WHERE session_id = %s', (session_id,))
-    cur.execute('UPDATE orders SET status = %s WHERE session_id = %s', ('CANCELLED', session_id))
-    
-    conn.commit()
-    cur.close()
-    conn.close()
-    
-    log_event('account_reset')
-    
-    return jsonify({'success': True, 'message': 'Account reset successfully'})
-
-def get_market_data():
-    return [
-        {'symbol': 'AAPL', 'name': 'Apple Inc.', 'bid': 178.22, 'ask': 178.24, 'last': 178.23, 'change': 1.89, 'change_percent': 1.07, 'volume': '87.2M'},
-        {'symbol': 'MSFT', 'name': 'Microsoft Corporation', 'bid': 378.55, 'ask': 378.57, 'last': 378.56, 'change': -2.34, 'change_percent': -0.61, 'volume': '45.8M'},
-        {'symbol': 'GOOGL', 'name': 'Alphabet Inc.', 'bid': 142.14, 'ask': 142.16, 'last': 142.15, 'change': 0.78, 'change_percent': 0.55, 'volume': '32.1M'},
-        {'symbol': 'TSLA', 'name': 'Tesla Inc.', 'bid': 242.83, 'ask': 242.85, 'last': 242.84, 'change': 5.67, 'change_percent': 2.39, 'volume': '145.3M'},
-        {'symbol': 'NVDA', 'name': 'NVIDIA Corp', 'bid': 478.10, 'ask': 478.14, 'last': 478.12, 'change': -3.24, 'change_percent': -0.67, 'volume': '98M'},
-        {'symbol': 'GME', 'name': 'GameStop Corp', 'bid': 18.43, 'ask': 18.47, 'last': 18.45, 'change': 2.34, 'change_percent': 14.53, 'volume': '234M'}
-    ]
+    return jsonify({'success': False, 'message': 'Invalid action'})
 
 if __name__ == '__main__':
     init_db()

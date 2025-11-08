@@ -5,6 +5,7 @@ from psycopg.rows import dict_row
 import os
 import json
 from dotenv import load_dotenv
+import random
 
 load_dotenv()
 
@@ -78,6 +79,30 @@ def init_db():
         )
     ''')
     
+    # Stock prices table
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS stock_prices (
+            symbol VARCHAR(10) PRIMARY KEY,
+            company_name VARCHAR(100) NOT NULL,
+            base_price DECIMAL(10, 2) NOT NULL,
+            current_price DECIMAL(10, 2) NOT NULL,
+            volatility VARCHAR(10) NOT NULL,
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Achievements table
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS achievements (
+            achievement_id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(user_id),
+            session_id VARCHAR(255) NOT NULL,
+            achievement_name VARCHAR(100) NOT NULL,
+            unlocked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(session_id, achievement_name)
+        )
+    ''')
+    
     conn.commit()
     cur.close()
     conn.close()
@@ -98,6 +123,13 @@ def init_user():
         
         user = cur.fetchone()
         session['user_id'] = user['user_id']
+        
+        # Unlock only the $100K Portfolio achievement initially
+        cur.execute('''
+            INSERT INTO achievements (user_id, session_id, achievement_name)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (session_id, achievement_name) DO NOTHING
+        ''', (session['user_id'], session['session_id'], '$100K Portfolio'))
         
         conn.commit()
         cur.close()
@@ -126,9 +158,150 @@ def log_event(event_type, event_data=None):
     cur.close()
     conn.close()
 
+# Update stock prices with algorithmic volatility
+def update_stock_prices():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    # Get all stocks
+    cur.execute('SELECT symbol, base_price, volatility FROM stock_prices')
+    stocks = cur.fetchall()
+    
+    for stock in stocks:
+        symbol = stock['symbol']
+        base_price = float(stock['base_price'])
+        volatility = stock['volatility']
+        
+        # Determine volatility range
+        if volatility == 'high':
+            change_percent = random.uniform(-0.05, 0.05)  # ±5%
+        elif volatility == 'medium':
+            change_percent = random.uniform(-0.02, 0.02)  # ±2%
+        else:  # low
+            change_percent = random.uniform(-0.01, 0.01)  # ±1%
+        
+        # Calculate new price
+        new_price = base_price * (1 + change_percent)
+        new_price = round(new_price, 2)
+        
+        # Update in database
+        cur.execute('''
+            UPDATE stock_prices 
+            SET current_price = %s, last_updated = CURRENT_TIMESTAMP
+            WHERE symbol = %s
+        ''', (new_price, symbol))
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# Initialize stock data if not exists
+def init_stock_data():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    stocks = [
+        ('AAPL', 'Apple Inc.', 178.50, 'medium'),
+        ('MSFT', 'Microsoft Corporation', 378.50, 'medium'),
+        ('GOOGL', 'Alphabet Inc.', 142.00, 'medium'),
+        ('AMZN', 'Amazon.com Inc.', 151.25, 'medium'),
+        ('META', 'Meta Platforms Inc.', 352.75, 'medium'),
+        ('TSLA', 'Tesla Inc.', 242.50, 'high'),
+        ('NVDA', 'NVIDIA Corporation', 478.00, 'high'),
+        ('AMD', 'Advanced Micro Devices', 138.25, 'high'),
+        ('JPM', 'JPMorgan Chase & Co.', 158.75, 'low'),
+        ('BAC', 'Bank of America Corp.', 33.50, 'low'),
+        ('WMT', 'Walmart Inc.', 168.25, 'low'),
+        ('PG', 'Procter & Gamble Co.', 155.50, 'low'),
+        ('JNJ', 'Johnson & Johnson', 157.75, 'low'),
+        ('DIS', 'The Walt Disney Company', 96.50, 'medium'),
+        ('NKE', 'Nike Inc.', 108.75, 'medium'),
+        ('NFLX', 'Netflix Inc.', 442.50, 'high'),
+        ('COST', 'Costco Wholesale Corp.', 588.25, 'low'),
+        ('V', 'Visa Inc.', 258.50, 'low'),
+        ('MA', 'Mastercard Inc.', 412.75, 'low'),
+        ('PEP', 'PepsiCo Inc.', 172.50, 'low')
+    ]
+    
+    for symbol, name, price, volatility in stocks:
+        cur.execute('''
+            INSERT INTO stock_prices (symbol, company_name, base_price, current_price, volatility)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (symbol) DO NOTHING
+        ''', (symbol, name, price, price, volatility))
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# Get current stock prices
+def get_market_data():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    cur.execute('''
+        SELECT symbol, company_name, current_price, base_price, volatility
+        FROM stock_prices
+        ORDER BY symbol
+    ''')
+    stocks = cur.fetchall()
+    
+    cur.close()
+    conn.close()
+    
+    market_data = []
+    for stock in stocks:
+        current = float(stock['current_price'])
+        base = float(stock['base_price'])
+        change = current - base
+        percent = (change / base * 100) if base > 0 else 0
+        
+        market_data.append({
+            'symbol': stock['symbol'],
+            'name': stock['company_name'],
+            'price': current,
+            'change': change,
+            'percent': percent,
+            'volume': f"{random.randint(10, 250)}M"
+        })
+    
+    return market_data
+
+# Get user's unlocked achievements
+def get_user_achievements():
+    if 'session_id' not in session:
+        return []
+    
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    cur.execute('''
+        SELECT achievement_name
+        FROM achievements
+        WHERE session_id = %s
+    ''', (session['session_id'],))
+    
+    unlocked = [row['achievement_name'] for row in cur.fetchall()]
+    
+    cur.close()
+    conn.close()
+    
+    all_achievements = [
+        {'name': 'First Trade', 'icon': '🎯', 'unlocked': 'First Trade' in unlocked},
+        {'name': '10 Day Streak', 'icon': '🔥', 'unlocked': '10 Day Streak' in unlocked},
+        {'name': 'Green Week', 'icon': '💚', 'unlocked': 'Green Week' in unlocked},
+        {'name': '$100K Portfolio', 'icon': '💎', 'unlocked': '$100K Portfolio' in unlocked},
+        {'name': 'Top 100', 'icon': '🏆', 'unlocked': 'Top 100' in unlocked},
+        {'name': 'Day Trader', 'icon': '⚡', 'unlocked': 'Day Trader' in unlocked}
+    ]
+    
+    return all_achievements
+
 @app.route('/')
 def index():
     init_user()
+    init_stock_data()
+    update_stock_prices()
     log_event('page_view', {'page': 'home'})
     
     session_id = session['session_id']
@@ -151,10 +324,10 @@ def index():
     # Calculate portfolio value
     portfolio_value = current_cash
     portfolio_items = []
-    trending_stocks = get_trending_stocks()
+    market_data = get_market_data()
     
     for item in portfolio_data:
-        stock = next((s for s in trending_stocks if s['symbol'] == item['symbol']), None)
+        stock = next((s for s in market_data if s['symbol'] == item['symbol']), None)
         if stock:
             current_value = item['shares'] * stock['price']
             cost_basis = item['shares'] * float(item['avg_price'])
@@ -187,19 +360,20 @@ def index():
     conn.close()
     
     user_stats = {
-        'rank': 47,
+        'rank': 100,  # Changed from 47
         'total_users': 12453,
-        'streak': 12,
-        'badges': 8,
+        'streak': 0,  # Changed from 12
+        'badges': 1,  # Only $100K Portfolio unlocked
         'portfolio_value': portfolio_value,
         'cash': current_cash,
         'daily_change': portfolio_value - 100000.00,
         'daily_change_percent': ((portfolio_value - 100000.00) / 100000.00 * 100),
-        'level': 'Gold Trader',
-        'xp': 8450,
-        'next_level_xp': 10000
+        'level': 'Beginner',  # Changed from Gold Trader
+        'xp': 0,  # Changed from 8450
+        'next_level_xp': 1000  # Changed from 10000
     }
     
+    # Top 10 leaderboard only (removed "You" row)
     leaderboard = [
         {'rank': 1, 'name': 'TradeMaster_99', 'returns': 147.3, 'streak': 45, 'badge': '🏆'},
         {'rank': 2, 'name': 'BullMarket_King', 'returns': 132.8, 'streak': 38, 'badge': '🥈'},
@@ -207,10 +381,13 @@ def index():
         {'rank': 4, 'name': 'MoonShot_Trader', 'returns': 119.2, 'streak': 28, 'badge': '⭐'},
         {'rank': 5, 'name': 'StockWhiz_AI', 'returns': 115.7, 'streak': 25, 'badge': '⭐'},
         {'rank': 6, 'name': 'RocketTrader_X', 'returns': 108.3, 'streak': 22, 'badge': '⭐'},
-        {'rank': 47, 'name': 'You', 'returns': ((portfolio_value - 100000) / 100000 * 100), 'streak': 12, 'badge': '🔥', 'is_user': True}
+        {'rank': 7, 'name': 'Alpha_Seeker', 'returns': 102.5, 'streak': 20, 'badge': '⭐'},
+        {'rank': 8, 'name': 'Market_Maven', 'returns': 98.7, 'streak': 18, 'badge': '⭐'},
+        {'rank': 9, 'name': 'Trade_Genius', 'returns': 94.3, 'streak': 15, 'badge': '⭐'},
+        {'rank': 10, 'name': 'Portfolio_Pro', 'returns': 89.1, 'streak': 12, 'badge': '⭐'}
     ]
     
-    achievements = get_achievements()
+    achievements = get_user_achievements()
     
     # Format trade history
     formatted_history = []
@@ -227,7 +404,7 @@ def index():
     return render_template('gamified.html',
                          user_stats=user_stats,
                          leaderboard=leaderboard,
-                         trending_stocks=trending_stocks,
+                         market_data=market_data,
                          achievements=achievements,
                          portfolio=portfolio_items,
                          trade_history=formatted_history)
@@ -250,9 +427,13 @@ def trade():
     if shares <= 0:
         return jsonify({'success': False, 'message': 'Invalid number of shares'})
     
-    stock = next((s for s in get_trending_stocks() if s['symbol'] == symbol), None)
+    if not symbol:
+        return jsonify({'success': False, 'message': 'Please select a symbol from the Market Data list'})
+    
+    market_data = get_market_data()
+    stock = next((s for s in market_data if s['symbol'] == symbol), None)
     if not stock:
-        return jsonify({'success': False, 'message': 'Stock not found'})
+        return jsonify({'success': False, 'message': 'Please select a symbol from the Market Data list'})
     
     price = stock['price']
     total_cost = shares * price
@@ -265,6 +446,11 @@ def trade():
     cur.execute('SELECT current_cash FROM users WHERE session_id = %s', (session_id,))
     user = cur.fetchone()
     current_cash = float(user['current_cash'])
+    
+    # Check if this is the user's first trade
+    cur.execute('SELECT COUNT(*) as count FROM trades WHERE session_id = %s', (session_id,))
+    trade_count = cur.fetchone()['count']
+    is_first_trade = trade_count == 0
     
     if action == 'buy':
         if total_cost > current_cash:
@@ -303,6 +489,14 @@ def trade():
             VALUES (%s, %s, %s, %s, %s, %s, %s)
         ''', (session['user_id'], session_id, symbol, 'BUY', shares, price, total_cost))
         
+        # Unlock First Trade achievement if this is first trade
+        if is_first_trade:
+            cur.execute('''
+                INSERT INTO achievements (user_id, session_id, achievement_name)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (session_id, achievement_name) DO NOTHING
+            ''', (session['user_id'], session_id, 'First Trade'))
+        
         conn.commit()
         cur.close()
         conn.close()
@@ -315,11 +509,16 @@ def trade():
             'total': total_cost
         })
         
-        return jsonify({
+        response = {
             'success': True,
             'message': f'Successfully bought {shares} shares of {symbol}!',
             'cash': new_cash
-        })
+        }
+        
+        if is_first_trade:
+            response['achievement_unlocked'] = 'First Trade'
+        
+        return jsonify(response)
     
     elif action == 'sell':
         cur.execute('SELECT shares FROM portfolio WHERE session_id = %s AND symbol = %s', (session_id, symbol))
@@ -351,6 +550,14 @@ def trade():
             VALUES (%s, %s, %s, %s, %s, %s, %s)
         ''', (session['user_id'], session_id, symbol, 'SELL', shares, price, total_cost))
         
+        # Unlock First Trade achievement if this is first trade
+        if is_first_trade:
+            cur.execute('''
+                INSERT INTO achievements (user_id, session_id, achievement_name)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (session_id, achievement_name) DO NOTHING
+            ''', (session['user_id'], session_id, 'First Trade'))
+        
         conn.commit()
         cur.close()
         conn.close()
@@ -363,58 +570,20 @@ def trade():
             'total': total_cost
         })
         
-        return jsonify({
+        response = {
             'success': True,
             'message': f'Successfully sold {shares} shares of {symbol}!',
             'cash': new_cash
-        })
+        }
+        
+        if is_first_trade:
+            response['achievement_unlocked'] = 'First Trade'
+        
+        return jsonify(response)
     
     cur.close()
     conn.close()
     return jsonify({'success': False, 'message': 'Invalid action'})
-
-@app.route('/reset', methods=['POST'])
-def reset():
-    session_id = session.get('session_id')
-    if not session_id:
-        return jsonify({'success': False, 'message': 'No session found'})
-    
-    conn = get_db_connection()
-    cur = conn.cursor()
-    
-    # Reset cash
-    cur.execute('UPDATE users SET current_cash = 100000.00 WHERE session_id = %s', (session_id,))
-    
-    # Clear portfolio
-    cur.execute('DELETE FROM portfolio WHERE session_id = %s', (session_id,))
-    
-    # Keep trade history for research purposes
-    
-    conn.commit()
-    cur.close()
-    conn.close()
-    
-    log_event('portfolio_reset')
-    
-    return jsonify({'success': True, 'message': 'Portfolio reset successfully!'})
-
-def get_trending_stocks():
-    return [
-        {'symbol': 'TSLA', 'name': 'Tesla Inc', 'price': 242.84, 'change': 5.67, 'percent': 2.39, 'volume': '145M', 'trending': 'up', 'popularity': 94},
-        {'symbol': 'NVDA', 'name': 'NVIDIA Corp', 'price': 478.12, 'change': -3.24, 'percent': -0.67, 'volume': '98M', 'trending': 'up', 'popularity': 91},
-        {'symbol': 'AAPL', 'name': 'Apple Inc', 'price': 178.23, 'change': 1.89, 'percent': 1.07, 'volume': '87M', 'trending': 'up', 'popularity': 88},
-        {'symbol': 'GME', 'name': 'GameStop', 'price': 18.45, 'change': 2.34, 'percent': 14.53, 'volume': '234M', 'trending': 'hot', 'popularity': 96}
-    ]
-
-def get_achievements():
-    return [
-        {'name': 'First Trade', 'icon': '🎯', 'unlocked': True},
-        {'name': '10 Day Streak', 'icon': '🔥', 'unlocked': True},
-        {'name': 'Green Week', 'icon': '💚', 'unlocked': True},
-        {'name': '$100K Portfolio', 'icon': '💎', 'unlocked': True},
-        {'name': 'Top 100', 'icon': '🏆', 'unlocked': False},
-        {'name': 'Day Trader', 'icon': '⚡', 'unlocked': False}
-    ]
 
 if __name__ == '__main__':
     init_db()
