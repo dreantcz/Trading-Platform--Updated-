@@ -417,29 +417,192 @@ def index():
 
 @app.route('/trade', methods=['POST'])
 def trade():
-    init_user()
-    
-    data = request.json
-    symbol = data.get('symbol')
-    shares = int(data.get('shares', 0))
-    action = data.get('action')
-    
-    log_event('trade_attempt', {
-        'symbol': symbol,
-        'shares': shares,
-        'action': action
-    })
-    
-    if shares <= 0:
-        return jsonify({'success': False, 'message': 'Invalid number of shares'})
-    
-    if not symbol:
-        return jsonify({'success': False, 'message': 'Please select a symbol from the Market Data list'})
-    
-    market_data = get_market_data()
-    stock = next((s for s in market_data if s['symbol'] == symbol), None)
-    if not stock:
-        return jsonify({'success': False, 'message': 'Please select a symbol from the Market Data list'})
+    try:
+        init_user()
+        
+        data = request.json
+        if not data:
+            return jsonify({'success': False, 'message': 'No data received'})
+        
+        symbol = data.get('symbol')
+        shares = int(data.get('shares', 0))
+        action = data.get('action')
+        
+        log_event('trade_attempt', {
+            'symbol': symbol,
+            'shares': shares,
+            'action': action
+        })
+        
+        if shares <= 0:
+            return jsonify({'success': False, 'message': 'Invalid number of shares'})
+        
+        if not symbol:
+            return jsonify({'success': False, 'message': 'Please select a symbol from the Market Data list'})
+        
+        market_data = get_market_data()
+        stock = next((s for s in market_data if s['symbol'] == symbol), None)
+        if not stock:
+            return jsonify({'success': False, 'message': 'Please select a symbol from the Market Data list'})
+        
+        price = stock['price']
+        total_cost = shares * price
+        session_id = session['session_id']
+        
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Get current cash
+        cur.execute('SELECT current_cash FROM users WHERE session_id = %s', (session_id,))
+        user = cur.fetchone()
+        current_cash = float(user['current_cash'])
+        
+        # Check if this is the user's first trade
+        cur.execute('SELECT COUNT(*) as count FROM trades WHERE session_id = %s', (session_id,))
+        trade_count = cur.fetchone()['count']
+        is_first_trade = trade_count == 0
+        
+        if action == 'buy':
+            if total_cost > current_cash:
+                cur.close()
+                conn.close()
+                return jsonify({'success': False, 'message': 'Insufficient funds'})
+            
+            # Update cash
+            new_cash = current_cash - total_cost
+            cur.execute('UPDATE users SET current_cash = %s WHERE session_id = %s', (new_cash, session_id))
+            
+            # Update portfolio
+            cur.execute('SELECT shares, avg_price FROM portfolio WHERE session_id = %s AND symbol = %s', (session_id, symbol))
+            existing = cur.fetchone()
+            
+            if existing:
+                old_shares = existing['shares']
+                old_avg = float(existing['avg_price'])
+                new_shares = old_shares + shares
+                new_avg = ((old_shares * old_avg) + (shares * price)) / new_shares
+                
+                cur.execute('''
+                    UPDATE portfolio 
+                    SET shares = %s, avg_price = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE session_id = %s AND symbol = %s
+                ''', (new_shares, new_avg, session_id, symbol))
+            else:
+                cur.execute('''
+                    INSERT INTO portfolio (user_id, session_id, symbol, shares, avg_price)
+                    VALUES (%s, %s, %s, %s, %s)
+                ''', (session['user_id'], session_id, symbol, shares, price))
+            
+            # Record trade
+            cur.execute('''
+                INSERT INTO trades (user_id, session_id, symbol, action, shares, price, total_cost)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ''', (session['user_id'], session_id, symbol, 'BUY', shares, price, total_cost))
+            
+            # Unlock First Trade achievement if this is first trade
+            if is_first_trade:
+                cur.execute('''
+                    INSERT INTO achievements (user_id, session_id, achievement_name)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (session_id, achievement_name) DO NOTHING
+                ''', (session['user_id'], session_id, 'First Trade'))
+            
+            conn.commit()
+            cur.close()
+            conn.close()
+            
+            log_event('trade_completed', {
+                'symbol': symbol,
+                'shares': shares,
+                'action': 'buy',
+                'price': price,
+                'total': total_cost
+            })
+            
+            response = {
+                'success': True,
+                'message': f'Successfully bought {shares} shares of {symbol}!',
+                'cash': new_cash
+            }
+            
+            if is_first_trade:
+                response['achievement_unlocked'] = 'First Trade'
+            
+            return jsonify(response)
+        
+        elif action == 'sell':
+            cur.execute('SELECT shares FROM portfolio WHERE session_id = %s AND symbol = %s', (session_id, symbol))
+            portfolio_item = cur.fetchone()
+            
+            if not portfolio_item or portfolio_item['shares'] < shares:
+                cur.close()
+                conn.close()
+                return jsonify({'success': False, 'message': 'Insufficient shares'})
+            
+            # Update cash
+            new_cash = current_cash + total_cost
+            cur.execute('UPDATE users SET current_cash = %s WHERE session_id = %s', (new_cash, session_id))
+            
+            # Update portfolio
+            new_shares = portfolio_item['shares'] - shares
+            if new_shares == 0:
+                cur.execute('DELETE FROM portfolio WHERE session_id = %s AND symbol = %s', (session_id, symbol))
+            else:
+                cur.execute('''
+                    UPDATE portfolio 
+                    SET shares = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE session_id = %s AND symbol = %s
+                ''', (new_shares, session_id, symbol))
+            
+            # Record trade
+            cur.execute('''
+                INSERT INTO trades (user_id, session_id, symbol, action, shares, price, total_cost)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ''', (session['user_id'], session_id, symbol, 'SELL', shares, price, total_cost))
+            
+            # Unlock First Trade achievement if this is first trade
+            if is_first_trade:
+                cur.execute('''
+                    INSERT INTO achievements (user_id, session_id, achievement_name)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (session_id, achievement_name) DO NOTHING
+                ''', (session['user_id'], session_id, 'First Trade'))
+            
+            conn.commit()
+            cur.close()
+            conn.close()
+            
+            log_event('trade_completed', {
+                'symbol': symbol,
+                'shares': shares,
+                'action': 'sell',
+                'price': price,
+                'total': total_cost
+            })
+            
+            response = {
+                'success': True,
+                'message': f'Successfully sold {shares} shares of {symbol}!',
+                'cash': new_cash
+            }
+            
+            if is_first_trade:
+                response['achievement_unlocked'] = 'First Trade'
+            
+            return jsonify(response)
+        
+        cur.close()
+        conn.close()
+        return jsonify({'success': False, 'message': 'Invalid action'})
+        
+    except Exception as e:
+        print(f"Trade route error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': f'Server error: {str(e)}'})
+    except Exception as e:
+        print(f"Trade route error: {e}")
+        return jsonify({'success': False, 'message': f'Server error: {str(e)}'})
     
     price = stock['price']
     total_cost = shares * price
